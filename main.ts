@@ -2,11 +2,12 @@ import { Hono } from "@hono/hono";
 import { HTTPException } from "@hono/hono/http-exception";
 import { factoryPeople } from "./mock/factory.ts";
 import { animalDb, personalDetailsDb } from "./mock/database/mod.ts";
-import { PersonalDetail } from "./types/inferred.ts";
 import { create_animal_table_command } from "./mock/database/animal.db.ts";
 import { create_people_table_command } from "./mock/database/personal-details.db.ts";
 import { Animal } from "./types/inferred.ts";
 import checkAuth from "./auth/checkAuth.ts";
+import registerUser from "./middleware/register.ts";
+import loginUser from "./middleware/login.ts";
 import { PersonalDetailWithSalt } from "./types/common.ts";
 
 if (animalDb.open) {
@@ -17,9 +18,14 @@ if (personalDetailsDb.open) {
   personalDetailsDb.exec(create_people_table_command);
 }
 
-const animals = new Hono().basePath("/animals");
-const people = new Hono().basePath("/people");
-const app = new Hono().basePath("/api");
+const admin = new Hono().basePath("/auth/admin");
+const animals = new Hono().basePath("/api/animals");
+const people = new Hono().basePath("/api/people");
+const app = new Hono();
+
+admin.post("/register", registerUser);
+admin.post("/login", loginUser);
+app.route("/", admin);
 
 animals.use(checkAuth);
 people.use(checkAuth);
@@ -110,9 +116,29 @@ people.get("/:id", (c) => {
     });
   }
   return c.json(personalDetail);
+}).delete((c) => {
+  const { id } = c.req.param();
+  const stmt = personalDetailsDb.prepare("SELECT * FROM people WHERE id = ?;");
+  const row = stmt.get<PersonalDetailWithSalt>(id);
+  if (!row) {
+    throw new HTTPException(404, { message: "User not found." });
+  }
+  const deleteOperation = personalDetailsDb.prepare(
+    "DELETE FROM people WHERE id = ?;",
+  );
+  const changes = deleteOperation.run(id);
+  if (changes > 0) {
+    return c.text(
+      `User with email "${row.email}" has been deleted in the database.`,
+    );
+  }
+  throw new HTTPException(503, {
+    message: "Server error. Unable to delete user in the database.",
+  });
 });
 
 app.route("/", people);
+
 if (import.meta.main) {
   Deno.serve({ hostname: "127.0.0.1", port: 5555 }, app.fetch);
 }
